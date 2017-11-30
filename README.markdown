@@ -1,6 +1,8 @@
-[![Build Status](https://travis-ci.org/ck1125/Java-WebSocket.png?branch=master)](https://travis-ci.org/ck1125/Java-WebSocket)
 Java WebSockets
 ===============
+[![Build Status](https://travis-ci.org/marci4/Java-WebSocket-Dev.svg?branch=master)](https://travis-ci.org/marci4/Java-WebSocket-Dev)
+[![Maven Central](https://maven-badges.herokuapp.com/maven-central/org.java-websocket/Java-WebSocket/badge.svg)](https://maven-badges.herokuapp.com/maven-central/org.java-websocket/Java-WebSocket)
+[![Javadocs](https://www.javadoc.io/badge/org.java-websocket/Java-WebSocket.svg)](https://www.javadoc.io/doc/org.java-websocket/Java-WebSocket)
 
 This repository contains a barebones WebSocket server and client implementation
 written in 100% Java. The underlying classes are implemented `java.nio`, which allows for a
@@ -10,36 +12,41 @@ non-blocking event-driven model (similar to the
 Implemented WebSocket protocol versions are:
 
  * [RFC 6455](http://tools.ietf.org/html/rfc6455)
- * [Hybi 17](http://tools.ietf.org/id/draft-ietf-hybi-thewebsocketprotocol-17.txt)
- * [Hybi 10](http://tools.ietf.org/id/draft-ietf-hybi-thewebsocketprotocol-10.txt)
- * [Hixie 76](http://tools.ietf.org/id/draft-hixie-thewebsocketprotocol-76.txt)
- * [Hixie 75](http://tools.ietf.org/id/draft-hixie-thewebsocketprotocol-75.txt)
 
 [Here](https://github.com/TooTallNate/Java-WebSocket/wiki/Drafts) some more details about protocol versions/drafts. 
 
 
-##Build
-You can build using Ant or Maven but there is nothing against just putting the source path ```src/main/java ``` on your applications buildpath.
+## Build
+You can build using Ant, Maven, Gradle or Leiningen but there is nothing against just putting the source path ```src/main/java ``` on your applications buildpath.
 
-###Ant
+### Ant
 
 ``` bash
 ant 
 ```
 
-will create the javadoc of this library at ```doc/``` and build the library itself: ```dest/java_websocket.jar```
+will create the javadoc of this library at ```doc/``` and build the library itself: ```dist/java_websocket.jar```
 
 The ant targets are: ```compile```, ```jar```, ```doc``` and ```clean```
 
-###Maven
-
-To use maven just add this dependency to your pom.xml:
+### Maven
+To use maven add this dependency to your pom.xml:
 ```xml
 <dependency>
-    <groupId>org.java-websocket</groupId>
-    <artifactId>Java-WebSocket</artifactId>
-    <version>1.3.0</version>
-</dependency> 
+  <groupId>org.java-websocket</groupId>
+  <artifactId>Java-WebSocket</artifactId>
+  <version>1.3.6</version>
+</dependency>
+```
+
+### Gradle
+To use Gradle add the maven central repository to your repositories list :
+```xml
+mavenCentral()
+```
+Then you can just add the latest version to your build.
+```xml
+compile "org.java-websocket:Java-WebSocket:1.3.6"
 ```
 
 Running the Examples
@@ -65,10 +72,7 @@ The chat client is a simple Swing GUI application that allows you to send
 messages to all other connected clients, and receive messages from others in a
 text box.
 
-In the example folder is also a simple HTML file chat client `chat.html`, which can be opened by any browser. If the browser natively supports the WebSocket API, then it's
-implementation will be used, otherwise it will fall back to a
-[Flash-based WebSocket Implementation](http://github.com/gimite/web-socket-js).
-
+In the example folder is also a simple HTML file chat client `chat.html`, which can be opened by any browser.
 
 Writing your own WebSocket Server
 ---------------------------------
@@ -85,7 +89,7 @@ Writing your own WebSocket Client
 
 The `org.java_websocket.client.WebSocketClient` abstract class can connect to
 valid WebSocket servers. The constructor expects a valid `ws://` URI to
-connect to. Important events `onOpen`, `onClose`, `onMessage` and `onIOError` 
+connect to. Important events `onOpen`, `onClose`, `onMessage` and `onError`
 get fired throughout the life of the WebSocketClient, and must be implemented 
 in **your** subclass.
 
@@ -115,8 +119,8 @@ Minimum Required JDK
 
 `Java-WebSocket` is known to work with:
 
- * Java 1.5 (aka SE 6)
- * Android 1.6 (API 4)
+ * Java 1.6 and higher
+ * Android 4.0 and higher
 
 Other JRE implementations may work as well, but haven't been tested.
 
@@ -146,14 +150,6 @@ if ("google_sdk".equals( Build.PRODUCT )) {
   // ... disable IPv6
 }
 ```
-
-
-Getting Support
----------------
-
-If you are looking for help using `Java-WebSocket` you might want to check out the
-[#java-websocket](http://webchat.freenode.net/?channels=java-websocket) IRC room
-on the FreeNode IRC network. 
 
 
 License

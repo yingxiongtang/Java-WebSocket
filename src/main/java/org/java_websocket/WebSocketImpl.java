@@ -1,4 +1,45 @@
+/*
+ * Copyright (c) 2010-2017 Nathan Rajlich
+ *
+ *  Permission is hereby granted, free of charge, to any person
+ *  obtaining a copy of this software and associated documentation
+ *  files (the "Software"), to deal in the Software without
+ *  restriction, including without limitation the rights to use,
+ *  copy, modify, merge, publish, distribute, sublicense, and/or sell
+ *  copies of the Software, and to permit persons to whom the
+ *  Software is furnished to do so, subject to the following
+ *  conditions:
+ *
+ *  The above copyright notice and this permission notice shall be
+ *  included in all copies or substantial portions of the Software.
+ *
+ *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ *  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+ *  OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ *  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+ *  HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+ *  WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ *  OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 package org.java_websocket;
+
+import org.java_websocket.drafts.Draft;
+import org.java_websocket.drafts.Draft.CloseHandshakeType;
+import org.java_websocket.drafts.Draft.HandshakeState;
+import org.java_websocket.drafts.Draft_6455;
+import org.java_websocket.exceptions.IncompleteHandshakeException;
+import org.java_websocket.exceptions.InvalidDataException;
+import org.java_websocket.exceptions.InvalidHandshakeException;
+import org.java_websocket.exceptions.WebsocketNotConnectedException;
+import org.java_websocket.framing.CloseFrame;
+import org.java_websocket.framing.Framedata;
+import org.java_websocket.framing.Framedata.Opcode;
+import org.java_websocket.framing.PingFrame;
+import org.java_websocket.handshake.*;
+import org.java_websocket.server.WebSocketServer.WebSocketWorker;
+import org.java_websocket.util.Charsetfunctions;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -9,57 +50,24 @@ import java.nio.channels.NotYetConnectedException;
 import java.nio.channels.SelectionKey;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
-
-import org.java_websocket.drafts.Draft;
-import org.java_websocket.drafts.Draft.CloseHandshakeType;
-import org.java_websocket.drafts.Draft.HandshakeState;
-import org.java_websocket.drafts.Draft_10;
-import org.java_websocket.drafts.Draft_17;
-import org.java_websocket.drafts.Draft_75;
-import org.java_websocket.drafts.Draft_76;
-import org.java_websocket.exceptions.IncompleteHandshakeException;
-import org.java_websocket.exceptions.InvalidDataException;
-import org.java_websocket.exceptions.InvalidHandshakeException;
-import org.java_websocket.exceptions.WebsocketNotConnectedException;
-import org.java_websocket.framing.CloseFrame;
-import org.java_websocket.framing.CloseFrameBuilder;
-import org.java_websocket.framing.Framedata;
-import org.java_websocket.framing.Framedata.Opcode;
-import org.java_websocket.handshake.ClientHandshake;
-import org.java_websocket.handshake.ClientHandshakeBuilder;
-import org.java_websocket.handshake.Handshakedata;
-import org.java_websocket.handshake.ServerHandshake;
-import org.java_websocket.handshake.ServerHandshakeBuilder;
-import org.java_websocket.server.WebSocketServer.WebSocketWorker;
-import org.java_websocket.util.Charsetfunctions;
 
 /**
  * Represents one end (client or server) of a single WebSocketImpl connection.
  * Takes care of the "handshake" phase, then allows for easy sending of
  * text frames, and receiving frames through an event-based model.
- * 
  */
 public class WebSocketImpl implements WebSocket {
-
 	public static int RCVBUF = 16384;
 
-	public static/*final*/boolean DEBUG = false; // must be final in the future in order to take advantage of VM optimization
+	/**
+	 * Activate debug mode for additional infos
+	 */
+	public static boolean DEBUG = false; // must be final in the future in order to take advantage of VM optimization
 
-	public static final List<Draft> defaultdraftlist = new ArrayList<Draft>( 4 );
-	static {
-		defaultdraftlist.add( new Draft_17() );
-		defaultdraftlist.add( new Draft_10() );
-		defaultdraftlist.add( new Draft_76() );
-		defaultdraftlist.add( new Draft_75() );
-	}
-
-	public SelectionKey key;
-
-	/** the possibly wrapped channel object whose selection is controlled by {@link #key} */
-	public ByteChannel channel;
 	/**
 	 * Queue of buffers that need to be sent to the client.
 	 */
@@ -68,63 +76,100 @@ public class WebSocketImpl implements WebSocket {
 	 * Queue of buffers that need to be processed
 	 */
 	public final BlockingQueue<ByteBuffer> inQueue;
-
-	/**
-	 * Helper variable meant to store the thread which ( exclusively ) triggers this objects decode method.
-	 **/
-	public volatile WebSocketWorker workerThread; // TODO reset worker?
-
-	/** When true no further frames may be submitted to be sent */
-	private volatile boolean flushandclosestate = false;
-
-	private READYSTATE readystate = READYSTATE.NOT_YET_CONNECTED;
-
 	/**
 	 * The listener to notify of WebSocket events.
 	 */
 	private final WebSocketListener wsl;
+	public SelectionKey key;
+	/**
+	 * the possibly wrapped channel object whose selection is controlled by {@link #key}
+	 */
+	public ByteChannel channel;
+	/**
+	 * Helper variable meant to store the thread which ( exclusively ) triggers this objects decode method.
+	 **/
+	public volatile WebSocketWorker workerThread; // TODO reset worker?
+	/**
+	 * When true no further frames may be submitted to be sent
+	 */
+	private volatile boolean flushandclosestate = false;
 
+	/**
+	 * The current state of the connection
+	 */
+	private READYSTATE readystate = READYSTATE.NOT_YET_CONNECTED;
+
+	/**
+	 * A list of drafts available for this websocket
+	 */
 	private List<Draft> knownDrafts;
 
+	/**
+	 * The draft which is used by this websocket
+	 */
 	private Draft draft = null;
 
+	/**
+	 * The role which this websocket takes in the connection
+	 */
 	private Role role;
 
-	private Opcode current_continuous_frame_opcode = null;
-
-	/** the bytes of an incomplete received handshake */
+	/**
+	 * the bytes of an incomplete received handshake
+	 */
 	private ByteBuffer tmpHandshakeBytes = ByteBuffer.allocate( 0 );
 
-	/** stores the handshake sent by this websocket ( Role.CLIENT only ) */
+	/**
+	 * stores the handshake sent by this websocket ( Role.CLIENT only )
+	 */
 	private ClientHandshake handshakerequest = null;
 
 	private String closemessage = null;
 	private Integer closecode = null;
 	private Boolean closedremotely = null;
-	
+
 	private String resourceDescriptor = null;
 
 	/**
-	 * crates a websocket with server role
+	 * Attribute, when the last pong was recieved
 	 */
-	public WebSocketImpl( WebSocketListener listener , List<Draft> drafts ) {
-		this( listener, (Draft) null );
+	private long lastPong = System.currentTimeMillis();
+
+	/**
+	 * Attribut to synchronize the write
+	 */
+	private static final Object synchronizeWriteObject = new Object();
+
+	/**
+	 * Attribute to cache a ping frame
+	 */
+	private PingFrame pingFrame;
+
+	/**
+	 * Creates a websocket with server role
+	 *
+	 * @param listener The listener for this instance
+	 * @param drafts   The drafts which should be used
+	 */
+	public WebSocketImpl( WebSocketListener listener, List<Draft> drafts ) {
+		this( listener, ( Draft ) null );
 		this.role = Role.SERVER;
 		// draft.copyInstance will be called when the draft is first needed
 		if( drafts == null || drafts.isEmpty() ) {
-			knownDrafts = defaultdraftlist;
+			knownDrafts = new ArrayList<Draft>();
+			knownDrafts.add( new Draft_6455() );
 		} else {
 			knownDrafts = drafts;
 		}
 	}
 
 	/**
-	 * crates a websocket with client role
-	 * 
-	 * @param listener
-	 *            may be unbound
+	 * creates a websocket with client role
+	 *
+	 * @param listener The listener for this instance
+	 * @param draft    The draft which should be used
 	 */
-	public WebSocketImpl( WebSocketListener listener , Draft draft ) {
+	public WebSocketImpl( WebSocketListener listener, Draft draft ) {
 		if( listener == null || ( draft == null && role == Role.SERVER ) )// socket can be null because we want do be able to create the object without already having a bound channel
 			throw new IllegalArgumentException( "parameters must not be null" );
 		this.outQueue = new LinkedBlockingQueue<ByteBuffer>();
@@ -136,28 +181,32 @@ public class WebSocketImpl implements WebSocket {
 	}
 
 	@Deprecated
-	public WebSocketImpl( WebSocketListener listener , Draft draft , Socket socket ) {
+	public WebSocketImpl( WebSocketListener listener, Draft draft, Socket socket ) {
 		this( listener, draft );
 	}
 
 	@Deprecated
-	public WebSocketImpl( WebSocketListener listener , List<Draft> drafts , Socket socket ) {
+	public WebSocketImpl( WebSocketListener listener, List<Draft> drafts, Socket socket ) {
 		this( listener, drafts );
 	}
 
 	/**
-	 * 
+	 * Method to decode the provided ByteBuffer
+	 *
+	 * @param socketBuffer the ByteBuffer to decode
 	 */
 	public void decode( ByteBuffer socketBuffer ) {
 		assert ( socketBuffer.hasRemaining() );
 
 		if( DEBUG )
-			System.out.println( "process(" + socketBuffer.remaining() + "): {" + ( socketBuffer.remaining() > 1000 ? "too big to display" : new String( socketBuffer.array(), socketBuffer.position(), socketBuffer.remaining() ) ) + "}" );
+			System.out.println( "process(" + socketBuffer.remaining() + "): {" + ( socketBuffer.remaining() > 1000 ? "too big to display" : new String( socketBuffer.array(), socketBuffer.position(), socketBuffer.remaining() ) ) + '}' );
 
-		if( readystate != READYSTATE.NOT_YET_CONNECTED ) {
-			decodeFrames( socketBuffer );;
+		if( getReadyState() != READYSTATE.NOT_YET_CONNECTED ) {
+			if( getReadyState() == READYSTATE.OPEN ) {
+				decodeFrames( socketBuffer );
+			}
 		} else {
-			if( decodeHandshake( socketBuffer ) ) {
+			if( decodeHandshake( socketBuffer ) && (!isClosing() && !isClosed())) {
 				assert ( tmpHandshakeBytes.hasRemaining() != socketBuffer.hasRemaining() || !socketBuffer.hasRemaining() ); // the buffers will never have remaining bytes at the same time
 
 				if( socketBuffer.hasRemaining() ) {
@@ -169,6 +218,7 @@ public class WebSocketImpl implements WebSocket {
 		}
 		assert ( isClosing() || isFlushAndClose() || !socketBuffer.hasRemaining() );
 	}
+
 	/**
 	 * Returns whether the handshake phase has is completed.
 	 * In case of a broken handshake this will be never the case.
@@ -191,20 +241,7 @@ public class WebSocketImpl implements WebSocket {
 		}
 		socketBuffer.mark();
 		try {
-			if( draft == null ) {
-				HandshakeState isflashedgecase = isFlashEdgeCase( socketBuffer );
-				if( isflashedgecase == HandshakeState.MATCHED ) {
-					try {
-						write( ByteBuffer.wrap( Charsetfunctions.utf8Bytes( wsl.getFlashPolicy( this ) ) ) );
-						close( CloseFrame.FLASHPOLICY, "" );
-					} catch ( InvalidDataException e ) {
-						close( CloseFrame.ABNORMAL_CLOSE, "remote peer closed connection before flashpolicy could be transmitted", true );
-					}
-					return false;
-				}
-			}
-			HandshakeState handshakestate = null;
-
+			HandshakeState handshakestate;
 			try {
 				if( role == Role.SERVER ) {
 					if( draft == null ) {
@@ -214,11 +251,11 @@ public class WebSocketImpl implements WebSocket {
 								d.setParseMode( role );
 								socketBuffer.reset();
 								Handshakedata tmphandshake = d.translateHandshake( socketBuffer );
-								if( tmphandshake instanceof ClientHandshake == false ) {
-									flushAndClose( CloseFrame.PROTOCOL_ERROR, "wrong http function", false );
+								if( !( tmphandshake instanceof ClientHandshake ) ) {
+									closeConnectionDueToWrongHandshake( new InvalidDataException( CloseFrame.PROTOCOL_ERROR, "wrong http function" ) );
 									return false;
 								}
-								ClientHandshake handshake = (ClientHandshake) tmphandshake;
+								ClientHandshake handshake = ( ClientHandshake ) tmphandshake;
 								handshakestate = d.acceptHandshakeAsServer( handshake );
 								if( handshakestate == HandshakeState.MATCHED ) {
 									resourceDescriptor = handshake.getResourceDescriptor();
@@ -226,11 +263,11 @@ public class WebSocketImpl implements WebSocket {
 									try {
 										response = wsl.onWebsocketHandshakeReceivedAsServer( this, d, handshake );
 									} catch ( InvalidDataException e ) {
-										flushAndClose( e.getCloseCode(), e.getMessage(), false );
+										closeConnectionDueToWrongHandshake( e );
 										return false;
 									} catch ( RuntimeException e ) {
 										wsl.onWebsocketError( this, e );
-										flushAndClose( CloseFrame.NEVER_CONNECTED, e.getMessage(), false );
+										closeConnectionDueToInternalServerError( e );
 										return false;
 									}
 									write( d.createHandshake( d.postProcessHandshakeResponseAsServer( handshake, response ), role ) );
@@ -243,17 +280,17 @@ public class WebSocketImpl implements WebSocket {
 							}
 						}
 						if( draft == null ) {
-							close( CloseFrame.PROTOCOL_ERROR, "no draft matches" );
+							closeConnectionDueToWrongHandshake( new InvalidDataException( CloseFrame.PROTOCOL_ERROR, "no draft matches" ) );
 						}
 						return false;
 					} else {
 						// special case for multiple step handshakes
 						Handshakedata tmphandshake = draft.translateHandshake( socketBuffer );
-						if( tmphandshake instanceof ClientHandshake == false ) {
+						if( !( tmphandshake instanceof ClientHandshake ) ) {
 							flushAndClose( CloseFrame.PROTOCOL_ERROR, "wrong http function", false );
 							return false;
 						}
-						ClientHandshake handshake = (ClientHandshake) tmphandshake;
+						ClientHandshake handshake = ( ClientHandshake ) tmphandshake;
 						handshakestate = draft.acceptHandshakeAsServer( handshake );
 
 						if( handshakestate == HandshakeState.MATCHED ) {
@@ -267,11 +304,11 @@ public class WebSocketImpl implements WebSocket {
 				} else if( role == Role.CLIENT ) {
 					draft.setParseMode( role );
 					Handshakedata tmphandshake = draft.translateHandshake( socketBuffer );
-					if( tmphandshake instanceof ServerHandshake == false ) {
+					if( !( tmphandshake instanceof ServerHandshake ) ) {
 						flushAndClose( CloseFrame.PROTOCOL_ERROR, "wrong http function", false );
 						return false;
 					}
-					ServerHandshake handshake = (ServerHandshake) tmphandshake;
+					ServerHandshake handshake = ( ServerHandshake ) tmphandshake;
 					handshakestate = draft.acceptHandshakeAsClient( handshakerequest, handshake );
 					if( handshakestate == HandshakeState.MATCHED ) {
 						try {
@@ -315,76 +352,13 @@ public class WebSocketImpl implements WebSocket {
 	}
 
 	private void decodeFrames( ByteBuffer socketBuffer ) {
-
 		List<Framedata> frames;
 		try {
 			frames = draft.translateFrame( socketBuffer );
 			for( Framedata f : frames ) {
 				if( DEBUG )
 					System.out.println( "matched frame: " + f );
-				Opcode curop = f.getOpcode();
-				boolean fin = f.isFin();
-
-				if( curop == Opcode.CLOSING ) {
-					int code = CloseFrame.NOCODE;
-					String reason = "";
-					if( f instanceof CloseFrame ) {
-						CloseFrame cf = (CloseFrame) f;
-						code = cf.getCloseCode();
-						reason = cf.getMessage();
-					}
-					if( readystate == READYSTATE.CLOSING ) {
-						// complete the close handshake by disconnecting
-						closeConnection( code, reason, true );
-					} else {
-						// echo close handshake
-						if( draft.getCloseHandshakeType() == CloseHandshakeType.TWOWAY )
-							close( code, reason, true );
-						else
-							flushAndClose( code, reason, false );
-					}
-					continue;
-				} else if( curop == Opcode.PING ) {
-					wsl.onWebsocketPing( this, f );
-					continue;
-				} else if( curop == Opcode.PONG ) {
-					wsl.onWebsocketPong( this, f );
-					continue;
-				} else if( !fin || curop == Opcode.CONTINUOUS ) {
-					if( curop != Opcode.CONTINUOUS ) {
-						if( current_continuous_frame_opcode != null )
-							throw new InvalidDataException( CloseFrame.PROTOCOL_ERROR, "Previous continuous frame sequence not completed." );
-						current_continuous_frame_opcode = curop;
-					} else if( fin ) {
-						if( current_continuous_frame_opcode == null )
-							throw new InvalidDataException( CloseFrame.PROTOCOL_ERROR, "Continuous frame sequence was not started." );
-						current_continuous_frame_opcode = null;
-					} else if( current_continuous_frame_opcode == null ) {
-						throw new InvalidDataException( CloseFrame.PROTOCOL_ERROR, "Continuous frame sequence was not started." );
-					}
-					try {
-						wsl.onWebsocketMessageFragment( this, f );
-					} catch ( RuntimeException e ) {
-						wsl.onWebsocketError( this, e );
-					}
-
-				} else if( current_continuous_frame_opcode != null ) {
-					throw new InvalidDataException( CloseFrame.PROTOCOL_ERROR, "Continuous frame sequence not completed." );
-				} else if( curop == Opcode.TEXT ) {
-					try {
-						wsl.onWebsocketMessage( this, Charsetfunctions.stringUtf8( f.getPayloadData() ) );
-					} catch ( RuntimeException e ) {
-						wsl.onWebsocketError( this, e );
-					}
-				} else if( curop == Opcode.BINARY ) {
-					try {
-						wsl.onWebsocketMessage( this, f.getPayloadData() );
-					} catch ( RuntimeException e ) {
-						wsl.onWebsocketError( this, e );
-					}
-				} else {
-					throw new InvalidDataException( CloseFrame.PROTOCOL_ERROR, "non control or continious frame expected" );
-				}
+				draft.processFrame( this, f );
 			}
 		} catch ( InvalidDataException e1 ) {
 			wsl.onWebsocketError( this, e1 );
@@ -393,12 +367,51 @@ public class WebSocketImpl implements WebSocket {
 		}
 	}
 
-	private void close( int code, String message, boolean remote ) {
-		if( readystate != READYSTATE.CLOSING && readystate != READYSTATE.CLOSED ) {
-			if( readystate == READYSTATE.OPEN ) {
+	/**
+	 * Close the connection if the received handshake was not correct
+	 *
+	 * @param exception the InvalidDataException causing this problem
+	 */
+	private void closeConnectionDueToWrongHandshake( InvalidDataException exception ) {
+		write( generateHttpResponseDueToError( 404 ) );
+		flushAndClose( exception.getCloseCode(), exception.getMessage(), false );
+	}
+
+	/**
+	 * Close the connection if there was a server error by a RuntimeException
+	 *
+	 * @param exception the RuntimeException causing this problem
+	 */
+	private void closeConnectionDueToInternalServerError( RuntimeException exception ) {
+		write( generateHttpResponseDueToError( 500 ) );
+		flushAndClose( CloseFrame.NEVER_CONNECTED, exception.getMessage(), false );
+	}
+
+	/**
+	 * Generate a simple response for the corresponding endpoint to indicate some error
+	 *
+	 * @param errorCode the http error code
+	 * @return the complete response as ByteBuffer
+	 */
+	private ByteBuffer generateHttpResponseDueToError( int errorCode ) {
+		String errorCodeDescription;
+		switch(errorCode) {
+			case 404:
+				errorCodeDescription = "404 WebSocket Upgrade Failure";
+				break;
+			case 500:
+			default:
+				errorCodeDescription = "500 Internal Server Error";
+		}
+		return ByteBuffer.wrap( Charsetfunctions.asciiBytes( "HTTP/1.1 " + errorCodeDescription + "\r\nContent-Type: text/html\nServer: TooTallNate Java-WebSocket\r\nContent-Length: " + ( 48 + errorCodeDescription.length() ) + "\r\n\r\n<html><head></head><body><h1>" + errorCodeDescription + "</h1></body></html>" ) );
+	}
+
+	public synchronized void close( int code, String message, boolean remote ) {
+		if( getReadyState() != READYSTATE.CLOSING && readystate != READYSTATE.CLOSED ) {
+			if( getReadyState() == READYSTATE.OPEN ) {
 				if( code == CloseFrame.ABNORMAL_CLOSE ) {
-					assert ( remote == false );
-					readystate = READYSTATE.CLOSING;
+					assert ( !remote );
+					setReadyState( READYSTATE.CLOSING );
 					flushAndClose( code, message, false );
 					return;
 				}
@@ -411,7 +424,13 @@ public class WebSocketImpl implements WebSocket {
 								wsl.onWebsocketError( this, e );
 							}
 						}
-						sendFrame( new CloseFrameBuilder( code, message ) );
+						if( isOpen() ) {
+							CloseFrame closeFrame = new CloseFrame();
+							closeFrame.setReason( message );
+							closeFrame.setCode( code );
+							closeFrame.isValid();
+							sendFrame( closeFrame );
+						}
 					} catch ( InvalidDataException e ) {
 						wsl.onWebsocketError( this, e );
 						flushAndClose( CloseFrame.ABNORMAL_CLOSE, "generated frame is invalid", false );
@@ -421,12 +440,12 @@ public class WebSocketImpl implements WebSocket {
 			} else if( code == CloseFrame.FLASHPOLICY ) {
 				assert ( remote );
 				flushAndClose( CloseFrame.FLASHPOLICY, message, true );
+			} else if( code == CloseFrame.PROTOCOL_ERROR ) { // this endpoint found a PROTOCOL_ERROR
+				flushAndClose( code, message, remote );
 			} else {
 				flushAndClose( CloseFrame.NEVER_CONNECTED, message, false );
 			}
-			if( code == CloseFrame.PROTOCOL_ERROR )// this endpoint found a PROTOCOL_ERROR
-				flushAndClose( code, message, remote );
-			readystate = READYSTATE.CLOSING;
+			setReadyState( READYSTATE.CLOSING );
 			tmpHandshakeBytes = null;
 			return;
 		}
@@ -438,19 +457,26 @@ public class WebSocketImpl implements WebSocket {
 	}
 
 	/**
-	 * 
-	 * @param remote
-	 *            Indicates who "generated" <code>code</code>.<br>
-	 *            <code>true</code> means that this endpoint received the <code>code</code> from the other endpoint.<br>
-	 *            false means this endpoint decided to send the given code,<br>
-	 *            <code>remote</code> may also be true if this endpoint started the closing handshake since the other endpoint may not simply echo the <code>code</code> but close the connection the same time this endpoint does do but with an other <code>code</code>. <br>
+	 * This will close the connection immediately without a proper close handshake.
+	 * The code and the message therefore won't be transfered over the wire also they will be forwarded to onClose/onWebsocketClose.
+	 *
+	 * @param code    the closing code
+	 * @param message the closing message
+	 * @param remote  Indicates who "generated" <code>code</code>.<br>
+	 *                <code>true</code> means that this endpoint received the <code>code</code> from the other endpoint.<br>
+	 *                false means this endpoint decided to send the given code,<br>
+	 *                <code>remote</code> may also be true if this endpoint started the closing handshake since the other endpoint may not simply echo the <code>code</code> but close the connection the same time this endpoint does do but with an other <code>code</code>. <br>
 	 **/
-
-	protected synchronized void closeConnection( int code, String message, boolean remote ) {
-		if( readystate == READYSTATE.CLOSED ) {
+	public synchronized void closeConnection( int code, String message, boolean remote ) {
+		if( getReadyState() == READYSTATE.CLOSED ) {
 			return;
 		}
-
+		//Methods like eot() call this method without calling onClose(). Due to that reason we have to adjust the readystate manually
+		if( getReadyState() == READYSTATE.OPEN ) {
+			if( code == CloseFrame.ABNORMAL_CLOSE ) {
+				setReadyState( READYSTATE.CLOSING );
+			}
+		}
 		if( key != null ) {
 			// key.attach( null ); //see issue #114
 			key.cancel();
@@ -459,7 +485,13 @@ public class WebSocketImpl implements WebSocket {
 			try {
 				channel.close();
 			} catch ( IOException e ) {
-				wsl.onWebsocketError( this, e );
+				if( e.getMessage().equals( "Broken pipe" ) ) {
+					if( WebSocketImpl.DEBUG ) {
+						System.out.println( "Caught IOException: Broken pipe during closeConnection()" );
+					}
+				} else {
+					wsl.onWebsocketError( this, e );
+				}
 			}
 		}
 		try {
@@ -470,9 +502,7 @@ public class WebSocketImpl implements WebSocket {
 		if( draft != null )
 			draft.reset();
 		handshakerequest = null;
-
-		readystate = READYSTATE.CLOSED;
-		this.outQueue.clear();
+		setReadyState( READYSTATE.CLOSED );
 	}
 
 	protected void closeConnection( int code, boolean remote ) {
@@ -490,7 +520,7 @@ public class WebSocketImpl implements WebSocket {
 		closeConnection( code, message, false );
 	}
 
-	protected synchronized void flushAndClose( int code, String message, boolean remote ) {
+	public synchronized void flushAndClose( int code, String message, boolean remote ) {
 		if( flushandclosestate ) {
 			return;
 		}
@@ -539,9 +569,8 @@ public class WebSocketImpl implements WebSocket {
 
 	/**
 	 * Send Text data to the other end.
-	 * 
-	 * @throws IllegalArgumentException
-	 * @throws NotYetConnectedException
+	 *
+	 * @throws NotYetConnectedException websocket is not yet connected
 	 */
 	@Override
 	public void send( String text ) throws WebsocketNotConnectedException {
@@ -552,28 +581,36 @@ public class WebSocketImpl implements WebSocket {
 
 	/**
 	 * Send Binary data (plain bytes) to the other end.
-	 * 
-	 * @throws IllegalArgumentException
-	 * @throws NotYetConnectedException
+	 *
+	 * @throws IllegalArgumentException the data is null
+	 * @throws NotYetConnectedException websocket is not yet connected
 	 */
 	@Override
-	public void send( ByteBuffer bytes ) throws IllegalArgumentException , WebsocketNotConnectedException {
+	public void send( ByteBuffer bytes ) throws IllegalArgumentException, WebsocketNotConnectedException {
 		if( bytes == null )
 			throw new IllegalArgumentException( "Cannot send 'null' data to a WebSocketImpl." );
 		send( draft.createFrames( bytes, role == Role.CLIENT ) );
 	}
 
 	@Override
-	public void send( byte[] bytes ) throws IllegalArgumentException , WebsocketNotConnectedException {
+	public void send( byte[] bytes ) throws IllegalArgumentException, WebsocketNotConnectedException {
 		send( ByteBuffer.wrap( bytes ) );
 	}
 
 	private void send( Collection<Framedata> frames ) {
-		if( !isOpen() )
+		if( !isOpen() ) {
 			throw new WebsocketNotConnectedException();
-		for( Framedata f : frames ) {
-			sendFrame( f );
 		}
+		if( frames == null ) {
+			throw new IllegalArgumentException();
+		}
+		ArrayList<ByteBuffer> outgoingFrames = new ArrayList<ByteBuffer>();
+		for( Framedata f : frames ) {
+			if( DEBUG )
+				System.out.println( "send frame: " + f );
+			outgoingFrames.add( draft.createBinaryFrame( f ) );
+		}
+		write( outgoingFrames );
 	}
 
 	@Override
@@ -582,10 +619,20 @@ public class WebSocketImpl implements WebSocket {
 	}
 
 	@Override
+	public void sendFrame( Collection<Framedata> frames ) {
+		send( frames );
+	}
+
+	@Override
 	public void sendFrame( Framedata framedata ) {
-		if( DEBUG )
-			System.out.println( "send frame: " + framedata );
-		write( draft.createBinaryFrame( framedata ) );
+		send( Collections.singletonList( framedata ) );
+	}
+
+	public void sendPing() throws NotYetConnectedException {
+		if( pingFrame == null ) {
+			pingFrame = new PingFrame();
+		}
+		sendFrame( pingFrame );
 	}
 
 	@Override
@@ -593,33 +640,15 @@ public class WebSocketImpl implements WebSocket {
 		return !this.outQueue.isEmpty();
 	}
 
-	private HandshakeState isFlashEdgeCase( ByteBuffer request ) throws IncompleteHandshakeException {
-		request.mark();
-		if( request.limit() > Draft.FLASH_POLICY_REQUEST.length ) {
-			return HandshakeState.NOT_MATCHED;
-		} else if( request.limit() < Draft.FLASH_POLICY_REQUEST.length ) {
-			throw new IncompleteHandshakeException( Draft.FLASH_POLICY_REQUEST.length );
-		} else {
-
-			for( int flash_policy_index = 0 ; request.hasRemaining() ; flash_policy_index++ ) {
-				if( Draft.FLASH_POLICY_REQUEST[ flash_policy_index ] != request.get() ) {
-					request.reset();
-					return HandshakeState.NOT_MATCHED;
-				}
-			}
-			return HandshakeState.MATCHED;
-		}
-	}
-
 	public void startHandshake( ClientHandshakeBuilder handshakedata ) throws InvalidHandshakeException {
-		assert ( readystate != READYSTATE.CONNECTING ) : "shall only be called once";
+		assert ( getReadyState() != READYSTATE.CONNECTING ) : "shall only be called once";
 
 		// Store the Handshake Request we are about to send
 		this.handshakerequest = draft.postProcessHandshakeRequestAsClient( handshakedata );
 
 		resourceDescriptor = handshakedata.getResourceDescriptor();
-		assert( resourceDescriptor != null );
-		
+		assert ( resourceDescriptor != null );
+
 		// Notify Listener
 		try {
 			wsl.onWebsocketHandshakeSentAsClient( this, this.handshakerequest );
@@ -637,7 +666,7 @@ public class WebSocketImpl implements WebSocket {
 
 	private void write( ByteBuffer buf ) {
 		if( DEBUG )
-			System.out.println( "write(" + buf.remaining() + "): {" + ( buf.remaining() > 1000 ? "too big to display" : new String( buf.array() ) ) + "}" );
+			System.out.println( "write(" + buf.remaining() + "): {" + ( buf.remaining() > 1000 ? "too big to display" : new String( buf.array() ) ) + '}' );
 
 		outQueue.add( buf );
 		/*try {
@@ -650,16 +679,23 @@ public class WebSocketImpl implements WebSocket {
 		wsl.onWriteDemand( this );
 	}
 
+	/**
+	 * Write a list of bytebuffer (frames in binary form) into the outgoing queue
+	 *
+	 * @param bufs the list of bytebuffer
+	 */
 	private void write( List<ByteBuffer> bufs ) {
-		for( ByteBuffer b : bufs ) {
-			write( b );
+		synchronized(synchronizeWriteObject) {
+			for( ByteBuffer b : bufs ) {
+				write( b );
+			}
 		}
 	}
 
 	private void open( Handshakedata d ) {
 		if( DEBUG )
-			System.out.println( "open using draft: " + draft.getClass().getSimpleName() );
-		readystate = READYSTATE.OPEN;
+			System.out.println( "open using draft: " + draft );
+		setReadyState( READYSTATE.OPEN );
 		try {
 			wsl.onWebsocketOpen( this, d );
 		} catch ( RuntimeException e ) {
@@ -669,19 +705,19 @@ public class WebSocketImpl implements WebSocket {
 
 	@Override
 	public boolean isConnecting() {
-		assert ( flushandclosestate ? readystate == READYSTATE.CONNECTING : true );
-		return readystate == READYSTATE.CONNECTING; // ifflushandclosestate
+		assert ( !flushandclosestate || getReadyState() == READYSTATE.CONNECTING );
+		return getReadyState() == READYSTATE.CONNECTING; // ifflushandclosestate
 	}
 
 	@Override
 	public boolean isOpen() {
-		assert ( readystate == READYSTATE.OPEN ? !flushandclosestate : true );
-		return readystate == READYSTATE.OPEN;
+		assert ( getReadyState() != READYSTATE.OPEN || !flushandclosestate );
+		return getReadyState() == READYSTATE.OPEN;
 	}
 
 	@Override
 	public boolean isClosing() {
-		return readystate == READYSTATE.CLOSING;
+		return getReadyState() == READYSTATE.CLOSING;
 	}
 
 	@Override
@@ -691,12 +727,16 @@ public class WebSocketImpl implements WebSocket {
 
 	@Override
 	public boolean isClosed() {
-		return readystate == READYSTATE.CLOSED;
+		return getReadyState() == READYSTATE.CLOSED;
 	}
 
 	@Override
 	public READYSTATE getReadyState() {
 		return readystate;
+	}
+
+	private void setReadyState( READYSTATE readystate ) {
+		this.readystate = readystate;
 	}
 
 	@Override
@@ -732,6 +772,31 @@ public class WebSocketImpl implements WebSocket {
 	@Override
 	public String getResourceDescriptor() {
 		return resourceDescriptor;
+	}
+
+	/**
+	 * Getter for the last pong recieved
+	 *
+	 * @return the timestamp for the last recieved pong
+	 */
+	long getLastPong() {
+		return lastPong;
+	}
+
+	/**
+	 * Update the timestamp when the last pong was received
+	 */
+	public void updateLastPong() {
+		this.lastPong = System.currentTimeMillis();
+	}
+
+	/**
+	 * Getter for the websocket listener
+	 *
+	 * @return the websocket listener associated with this instance
+	 */
+	public WebSocketListener getWebSocketListener() {
+		return wsl;
 	}
 
 }
